@@ -1,0 +1,26 @@
+#+TITLE: Packaging
+#+LATEX: \pagebreak
+
+* command/get-pkgsrc
+
+  Configures a system to use pkgsrc.
+
+** Usage
+
+   #+BEGIN_SRC shell
+     git clone https://github.com/colstrom/packaging
+     cd packaging
+     command/get-pkgsrc
+   #+END_SRC
+
+   Optionally, set =MIRROR= to your package host. It defaults to my testing
+   repository at =https://unpkg.me=.
+
+** License
+
+   ~get-pkgsrc~ is available under the [[https://tldrlegal.com/license/mit-license][MIT License]]. See ~LICENSE.txt~ for the
+   full text.
+
+* Contributors
+
+  - [[https://colstrom.github.io/][Chris Olstrom]] | [[mailto:chris@olstrom.com][e-mail]] | [[https://twitter.com/ChrisOlstrom][Twitter]]
