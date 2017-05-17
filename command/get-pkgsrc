@@ -1,0 +1,317 @@
+#! /bin/sh
+# -*- mode: shell-script -*-
+
+#############
+## License ##
+#############
+
+# The MIT License (MIT)
+# Copyright © 2017 Chris Olstrom <chris@olstrom.com>
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+###################
+## Configuration ##
+###################
+
+test "${DEBUG:-false}" = 'false' || set -o xtrace
+
+MIRROR=${MIRROR:-https://unpkg.me}
+export PKG_PREFIX=${PKG_PREFIX:-/usr/pkg}
+export PATH=${PKG_PREFIX}/sbin:${PKG_PREFIX}/bin:${PATH}
+export MANPATH=${PKG_PREFIX}/man:${MANPATH}
+
+############
+## Errors ##
+############
+
+error_something_went_wrong() {
+    cat >&2 <<EOF
+ERROR
+  Something went wrong
+
+DETAILS
+  If you are seeing this, we don't have a more useful message available.
+
+SUGGESTIONS
+  Read the logs, maybe there's something useful in them. If that doesn't help,
+  try running this program with \$DEBUG set to a non-false value.
+
+EOF
+    exit 111
+}
+
+error_failed_to_download_package_summary() {
+    cat >&2 <<EOF
+ERROR
+  Failed to download package summary
+
+DETAILS
+  URL ${PKG_REPOS}/pkg_summary.xz
+
+EOF
+    exit 111
+}
+
+error_platform_not_supported_by_repository() {
+    cat >&2 <<EOF
+ERROR
+  Platform not supported by repository
+
+DETAILS
+  MIRROR   ${MIRROR}
+  OS       ${OS}
+  ARCH     ${ARCH}
+  RELEASE  ${RELEASE}
+
+EOF
+
+    if test -n "${ID_LIKE}"
+    then
+        cat >&2 <<EOF
+SUGGESTION for ${NAME}
+  This system is documented as being similar to:
+
+    ${ID_LIKE}
+
+  Try setting \$OS accordingly.
+
+EOF
+    fi
+
+    exit 111
+}
+
+######################################
+## Repository and Platform Handling ##
+######################################
+
+# Figure out what system we're running on.
+detect_platform() {
+    ARCH=${ARCH:-$(uname -m)}
+
+    if test -f /etc/os-release
+    then
+        # All reasonable Linux distributions provide /etc/os-release, so we can load
+        # that if it exists. The *contents* of this file vary wildly, but everything
+        # seems to have at minimum: ID (distribution name) and VERSION_ID (release).
+        . /etc/os-release
+        OS=${OS:-"$(uname -s)/${ID}"}
+        RELEASE=${RELEASE:-${VERSION_ID}}
+    else
+        # On illumos and BSD, things are less complicated. ^_~
+        OS=${OS:-$(uname -s)}
+        RELEASE=${RELEASE:-$(uname -r)}
+    fi
+
+    # pkgin falls back to this if /usr/pkg/pkgin/repositories.conf is unavailable.
+    export PKG_REPOS="${MIRROR}/packages/${OS}/${ARCH}/${RELEASE}/All"
+}
+
+# Check if repository supports platform by fetching a directory listing. A HEAD
+# request would be more practical here, since we only care if it exists.
+platform_is_supported_by_repository() {
+    wget \
+        --quiet \
+        --output-document /dev/null \
+        "${PKG_REPOS}/"
+}
+
+# Read package summary, fetching from repository if missing.
+pkg_summary() {
+    PKG_SUMMARY=${PKG_SUMMARY:-$(mktemp)}
+
+    if test -s "${PKG_SUMMARY}"
+    then
+        xz \
+            --decompress \
+            --to-stdout \
+            "${PKG_SUMMARY}"
+    else
+        if wget \
+               --quiet \
+               --output-document "${PKG_SUMMARY}" \
+               "${PKG_REPOS}/pkg_summary.xz"
+        then
+            pkg_summary
+        else
+            error_failed_to_download_package_summary
+        fi
+    fi
+}
+
+######################
+## Package Handling ##
+######################
+
+# List available packages
+list() {
+    pkg_summary \
+        | awk \
+              -F = \
+              '$1 == "PKGNAME" { print }' \
+        | cut \
+              -d = \
+              -f 2- \
+        | sed \
+              -e 's#nb[[:digit:]]*$##' \
+              -e 's#[\.[:digit:]]*$##' \
+              -e 's#-$##'
+}
+
+package() {
+    test ${#} -ge 1 || return 111
+    pkg_summary \
+        | awk \
+              -F = \
+              '
+                $1=="PKGNAME" && $2~/^'"${1}"'/ { matched=NR };
+                /^$/                            { matched=0  };
+                matched
+              '
+}
+
+depends() {
+    if test ${#} -ge 1
+    then
+        for package in ${@:-}
+        do
+            package ${package}
+        done
+    else
+        pkg_summary
+    fi \
+        | awk \
+              -F = \
+              '$1 == "DEPENDS"' \
+        | cut \
+              -d = \
+              -f 2- \
+        | tr \
+              -s '<=>' ' ' \
+        | sed \
+              -e 's#\[.*\]\*$##' \
+              -e 's#{.*}##' \
+              -e 's#- *$##' \
+              -e 's#-[[:digit:]\.]*$##' \
+        | awk \
+              '{ print $1 }' \
+        | sort \
+              -u
+}
+
+url() {
+    test ${#} -ge 1 || return 111
+
+    for package in ${@}
+    do
+        package "${package}" \
+            | awk \
+                  -F = \
+                  '$1=="PKGNAME" { print $2 }' \
+            | while read archive
+        do
+            echo "${PKG_REPOS}/${archive}.tgz"
+        done
+    done
+}
+
+description() {
+    test ${#} -ge 1 || return 111
+
+    package "${1}" \
+        | awk \
+              -F = \
+              '$1=="DESCRIPTION"' \
+        | cut \
+              -d = \
+              -f 2-
+}
+
+install() {
+    test ${#} -ge 1 || return 111
+
+    package=${1}
+    url=$(url "${package}")
+
+    pkg_add "${url}"
+}
+
+bootstrap() {
+    local=$(mktemp)
+    remote=$(url pkg_install)
+
+    # Manually install pkg_install from tarball
+    wget --output-document "${local}" "${remote}"
+    mkdir -p "${PKG_PREFIX}"
+    tar xf "${local}" -C "${PKG_PREFIX}"
+    . "${PKG_PREFIX}/+INSTALL" pkg_install PRE-INSTALL
+    . "${PKG_PREFIX}/+INSTALL" pkg_install POST-INSTALL
+    rm -f "${local}" "${PKG_PREFIX}"+*
+
+    # Use pkg_install to reinstall itself
+    install pkg_install
+}
+
+configure_repositories() {
+    echo "${PKG_REPOS}" \
+        | tee "${PKG_PREFIX}/etc/pkgin/repositories.conf"
+}
+
+#############
+## Helpers ##
+#############
+
+finish() {
+    cat >&2 <<EOF
+
+COMPLETE
+
+  Installation is finished. If you haven't already done so, you should add the
+  following to your .profile or equivalent:
+
+  export PATH=${PKG_PREFIX}/sbin:${PKG_PREFIX}/bin:\${PATH}
+  export MANPATH=${PKG_PREFIX}/man:\${MANPATH}
+
+EOF
+}
+
+################
+## Entrypoint ##
+################
+
+main() {
+    detect_platform
+
+    if platform_is_supported_by_repository
+    then
+        if bootstrap \
+                && install pkgin \
+                && configure_repositories
+        then
+            finish
+        else
+            error_something_went_wrong
+        fi
+    else
+        error_platform_not_supported_by_repository
+    fi
+}
+
+main "${@:-}"
