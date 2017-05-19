@@ -303,7 +303,8 @@ main() {
     then
         if bootstrap \
                 && install pkgin \
-                && configure_repositories
+                && configure_repositories \
+                && pkgin update
         then
             finish
         else
